@@ -348,8 +348,423 @@ WHERE d.mFid=#facing2.mFid
 	AND d.Orid = #facing2.Orid
 	AND d.Id = #facing2.itId
 
---select * from #tDocuments
+WITH tOrders(MasterFID, mfID, orID, orType, AttrId, orDate, AttrText, Id,  DictId) AS
+(
+	SELECT
+		ord.MasterFID		/*ТП*/
+		, ord.mfID			/*Клиент*/
+		, ord.orID			/*ID заказа*/
+		, ord.orType		/*Тип документа*/
+		, ordobjtr.AttrId	/*Значение атрибута*/
+		, ord.orDate		/*Дата Заказа*/
+		, ordobjtr.AttrText
+		, ordobjtr.Id		/*ID товара*/
+		, ordobjtr.DictId
+	FROM DS_Orders AS ord
+	LEFT JOIN DS_Orders_Objects_Attributes AS ordobjtr
+	ON ordobjtr.MasterFid = ord.MasterFID
+		AND ordobjtr.OrId = ord.orID
+		/*
+			Фильтрация по выбранным параметрам отчета (МАСТЕРФИДУ)
+		*/
+		AND ord.MasterFID IN (	SELECT vis.MasterFid
+								FROM #tVisits AS vis
+								GROUP BY vis.MasterFid)
+		/*
+			Фильтрация по выбранным параметрам отчета (ФИДУ)
+		*/
+		AND ord.mfID IN (	SELECT vis.Fid
+							FROM #tVisits AS vis
+							GROUP BY vis.Fid)
+	WHERE ord.orDate BETWEEN @bDate AND @edate
+		/*
+			Фильтрация по необходимым документам
+		*/
+		AND ord.orType IN (613, 610, 608, 612, 611)
+		/*
+			Проверка на активность
+		*/
+		AND ordobjtr.ActiveFlag =1
+)
 
+SELECT
+	/*613-ый документ*/
+	N'613ый документ=>'
+	, (SELECT it.iName FROM DS_ITEMS AS it WHERE it.iID = ord613_items.Id) AS [Наименование]	/*Наименование ассортимента*/
+	, ISNULL(ord613_620atr.AttrText, 0) AS [Фейсинг] /*Фейсинг. 620ый атрибут*/
+	, ISNULL(ord613_634atr.AttrText, 0) AS [Кол-во на полке]/*Кол-во на полке (шт). 634ый атрибут*/
+	, ISNULL(ord613_635atr.AttrText, 0) AS [Кол-во на складе]/*Кол-во на складе (шт)	635ый атрибут*/
+	, ISNULL(CAST(ord613_620atr.AttrText AS FLOAT), 0) + ISNULL(CAST(ord613_634atr.AttrText AS FLOAT), 0) + ISNULL(CAST(ord613_635atr.AttrText AS FLOAT), 0) AS [ИТОГО]
+	, N'ПУСТО' AS [Out of Stock]
+	, N'ПУСТО' AS [Залистингованно]
+	, N'ПУСТО' AS [% присутствия]
+	, N'<=613ый документ'
+	/*613-ый документ*/
+	/*610-ый документ*/
+	, N'610ый документ=>'
+	, ord610_602atr.AttrText
+	, N'<=610ый документ'
+	/*610-ый документ*/
+	/*608-ой документ*/
+	, N'608-ой документ=>'
+	, ord608.Attr1000005 AS [полка]
+	, ord608.Attr1000006 AS [каноэ]
+	, ord608.Attr1000007 AS [паллета]
+	, ord608.Attr1000008 AS [хол. витрина]
+	, ord608.Attr1000009 AS [холодильник]
+	, ord608.Attr1000010 AS [корзина]
+	, N'<=608-ой документ'
+	/*608-ой документ*/
+	/*612-ый документ*/
+	, N'612-ый документ=>'
+	, (SELECT it.iName FROM DS_ITEMS AS it WHERE it.iID = ord612_items.Id) AS [Наименование]	/*Наименование ассортимента*/
+	, ord612.Attr612 AS [Стойки]
+	, ord612.Attr613 AS [Торец гондолы]
+	, ord612.Attr614 AS [Паллета]
+	, ord612.Attr615 AS [Другое]
+	, ord612.Attr616 AS [Нет доп.места]
+	, N'<=612-ый документ'
+	/*612-ый документ*/
+	/*611-ый документ*/
+	, N'611-ый документ=>'
+	, (SELECT it.iName FROM DS_ITEMS AS it WHERE it.iID = ord611_items.Id) AS [Наименование]	/*Наименование ассортимента*/
+	, REPLACE(ord611.Attr603, '.', ',') AS [снижение цены]
+	, ord611.Attr604 AS [2+1]
+	, ord611.Attr605 AS [1+1]
+	, ord611.Attr606 AS [примотка]
+	, N'<=611-ый документ'
+	/*611-ый документ*/
+	, vis.MasterFid
+	, vis.Fid
+FROM #tVisits AS vis
+/*
+	Присоединение OrID + MasterFid по 613 ому документу
+	Необходимо для "СКИТ Кушать подано":
+		а)	Наименов. ассортим.
+		б)	Фейсинг(фронт полки, шт)
+		в)	Кол-во на полке (шт)	634ый атрибут
+		г)	Кол-во на складе (шт)	635ый атрибут
+		д)	Итого кол-во шт (авто)	сумма б, в, г, д
+		е)	Out-of-stock /*пока нет данных*/
+		ж)	Залистовано SKU (авто)
+		з)	% присутствия
+*/
+/*
+	Присоединение различного ассортимента по ID
+	По полученному ID будем присоединять группы товаров
+	По заданному типу документов
+	Сейчас тип документа = 613
+*/
+INNER JOIN
+(
+	SELECT	ord613.MasterFID
+			, ord613.mfID
+			, ord613.Id
+	FROM tOrders AS ord613
+	WHERE ord613.orType = 613
+	GROUP BY ord613.MasterFID
+			, ord613.mfID
+			, ord613.Id
+) AS ord613_items
+ON	ord613_items.MasterFID = vis.MasterFid
+	AND ord613_items.mfID = vis.Fid
+/*
+	Присоединение "Фэйсинг"
+	Ключ: МАСТЕРФИД + ФИД + id ТОВАРА
+*/
+LEFT JOIN
+(
+	SELECT ord613.MasterFID
+			, ord613.mfID
+			, ord613.AttrText
+			, ord613.Id
+			, ord613.orDate
+	FROM tOrders AS ord613
+	WHERE ord613.orType = 613
+		AND ord613.AttrId = 620
+) AS ord613_620atr
+ON	ord613_620atr.MasterFid = vis.MasterFid
+	AND ord613_620atr.mfID = vis.Fid
+	AND ord613_620atr.Id = ord613_items.Id
+/*
+	Присоединение "Кол-во на полке"
+	Ключ: МАСТЕРФИД + ФИД + id ТОВАРА
+*/
+LEFT JOIN
+(
+	SELECT ord613.MasterFID
+			, ord613.mfID
+			, ord613.AttrText
+			, ord613.Id
+			, ord613.orDate
+	FROM tOrders AS ord613
+	WHERE ord613.orType = 613
+		AND ord613.AttrId = 634
+) AS ord613_634atr
+ON	ord613_634atr.MasterFid = vis.MasterFid
+	AND ord613_634atr.mfID = vis.Fid
+	AND ord613_items.Id = ord613_634atr.Id
+/*
+	Присоединение "Кол-во на складе (шт)"
+	Ключ: МАСТЕРФИД + ФИД + id ТОВАРА
+*/
+LEFT JOIN
+(
+	SELECT ord613.MasterFID
+			, ord613.mfID
+			, ord613.AttrText
+			, ord613.Id
+			, ord613.orDate
+	FROM tOrders AS ord613
+	WHERE ord613.orType = 613
+		AND ord613.AttrId = 635
+) AS ord613_635atr
+ON	ord613_635atr.MasterFid = vis.MasterFid
+	AND ord613_635atr.mfID = vis.Fid
+	AND ord613_635atr.Id = ord613_items.Id
+/*
+	610-ый документ
+*/
+LEFT JOIN
+(
+	/*
+		информация о заказе. Берется из 610ого документа
+		присоединяем данные по информации по заказу к  по orID и MasterFid
+	*/
+	SELECT ord610.MasterFID
+			, ord610.mfID
+			, ord610.AttrText
+	FROM	tOrders AS ord610
+	INNER JOIN	#tDocuments AS tdoc610
+	/*
+		Ключ по мастерфид + фид + оrId
+	*/
+	ON tdoc610.MasterFid = ord610.MasterFID
+		AND tdoc610.mFid = ord610.mfID
+		AND tdoc610.OrId = ord610.orID
+		/*
+			проверка на то, что мы смотрим последний документа по этой точке
+		*/
+		AND tdoc610.OrDate = (SELECT MAX(docb.OrDate)
+							FROM #tDocuments AS docb
+							WHERE docb.MasterFid = tdoc610.MasterFid
+								AND docb.mFid=tdoc610.mFid
+								AND docb.OrType = 610
+							GROUP BY docb.MasterFid, docb.mFid)
+		/*
+			Оставляем только информацию о заказе
+		*/
+		AND ord610.AttrId = 602
+
+) AS ord610_602atr
+ON ord610_602atr.MasterFid = vis.MasterFid
+	AND ord610_602atr.mFid = vis.Fid
+/*
+	Присоединение 608-ого документа
+	Присоединение связки MasterFid + OrId по 608 документу
+	Необходимо для "Основные места продаж":
+		а)	Полка
+		б)	Каноэ
+		в)	Паллета
+		г)	Холодильная  витрина
+		д)	Холодильник
+		е)	Корзина
+*/
+LEFT JOIN
+(
+	/*
+		информация о заказе. Берется из 608ого документа
+		присоединяем данные по информации по заказу к  по orID и MasterFid
+	*/
+	SELECT ord608.MasterFID
+			, ord608.mfID
+			, ord608.orID
+			, ord608.Id
+			/*
+				Старый механизм
+			*/
+			, MAX( CASE WHEN ord608.Id  = 1000005 THEN ord608.AttrText ELSE N'' END ) AS Attr1000005
+			, MAX( CASE WHEN ord608.Id  = 1000006 THEN ord608.AttrText ELSE N'' END ) AS Attr1000006
+			, MAX( CASE WHEN ord608.Id  = 1000007 THEN ord608.AttrText ELSE N'' END ) AS Attr1000007
+			, MAX( CASE WHEN ord608.Id  = 1000008 THEN ord608.AttrText ELSE N'' END ) AS Attr1000008
+			, MAX( CASE WHEN ord608.Id  = 1000009 THEN ord608.AttrText ELSE N'' END ) AS Attr1000009
+			, MAX( CASE WHEN ord608.Id  = 1000010 THEN ord608.AttrText ELSE N'' END ) AS Attr1000010
+	FROM	tOrders AS ord608
+	INNER JOIN	#tDocuments AS tdoc608
+	/*
+		Ключ по мастерфид + фид + оrId
+	*/
+	ON tdoc608.MasterFid = ord608.MasterFID
+		AND tdoc608.mFid = ord608.mfID
+		AND tdoc608.OrId = ord608.orID
+		/*
+			проверка на то, что мы смотрим последний документа по этой точке
+		*/
+		AND tdoc608.OrDate = (SELECT MAX(docb.OrDate)
+							FROM #tDocuments AS docb
+							WHERE docb.MasterFid = tdoc608.MasterFid
+								AND docb.mFid=tdoc608.mFid
+								AND docb.OrType = 608
+							GROUP BY docb.MasterFid, docb.mFid)
+		AND ord608.Id IN (1000005, 1000006, 1000007, 1000008, 1000009, 1000010)
+		/*
+			Фильтрация по типу документа
+		*/
+		AND tdoc608.OrType = 608
+		AND ord608.DictId = 1
+	GROUP BY ord608.orID
+			, ord608.MasterFID
+			, ord608.mfID
+			, ord608.Id
+) AS ord608
+ON ord608.MasterFid = vis.MasterFid
+	AND ord608.mFid = vis.Fid
+	AND ord608.Id = ord613_items.Id
+/*
+	612ый документ
+*/
+/*
+	Присоединение различного ассортимента по ID
+	По полученному ID будем присоединять группы товаров
+	По заданному типу документов
+	Сейчас тип документа = 612
+*/
+INNER JOIN
+(
+	SELECT	ord612.MasterFID
+			, ord612.mfID
+			, ord612.Id
+	FROM tOrders AS ord612
+	WHERE ord612.orType = 612
+	GROUP BY ord612.MasterFID
+			, ord612.mfID
+			, ord612.Id
+) AS ord612_items
+ON	ord612_items.MasterFID = vis.MasterFid
+	AND ord612_items.mfID = vis.Fid
+/*
+	Информация по последему orId документа 612
+		*Стойки, торец гондолы]
+		*паллета
+		*другое
+		*нет доп. места
+*/
+LEFT JOIN
+(
+	SELECT ord612.MasterFID
+			, ord612.mfID
+			, ord612.orID
+			, ord612.Id
+			/*
+				Старый механизм
+			*/
+			, MAX( CASE WHEN ord612.AttrId  = 615 THEN ord612.AttrText ELSE N'' END ) AS Attr615
+			, MAX( CASE WHEN ord612.AttrId  = 614 THEN ord612.AttrText ELSE N'' END ) AS Attr614
+			, MAX( CASE WHEN ord612.AttrId  = 612 THEN ord612.AttrText ELSE N'' END ) AS Attr612
+			, MAX( CASE WHEN ord612.AttrId  = 613 THEN ord612.AttrText ELSE N'' END ) AS Attr613
+			, MAX( CASE WHEN ord612.AttrId  = 616 THEN ord612.AttrText ELSE N'' END ) AS Attr616
+	FROM	tOrders AS ord612
+	INNER JOIN	#tDocuments AS tdoc612
+	/*
+		Ключ по мастерфид + фид + оrId
+	*/
+	ON tdoc612.MasterFid = ord612.MasterFID
+		AND tdoc612.mFid = ord612.mfID
+		AND tdoc612.OrId = ord612.orID
+		/*
+			проверка на то, что мы смотрим последний документа по этой точке
+		*/
+		AND tdoc612.OrDate = (SELECT MAX(docb.OrDate)
+							FROM #tDocuments AS docb
+							WHERE docb.MasterFid = tdoc612.MasterFid
+								AND docb.mFid=tdoc612.mFid
+								AND docb.OrType = 612
+							GROUP BY docb.MasterFid, docb.mFid)
+		AND ord612.Id IN (615, 614, 612, 613, 616)
+		/*
+			Фильтрация по типу документа
+		*/
+		AND tdoc612.OrType = 612
+		AND ord612.DictId = 1
+	GROUP BY ord612.orID
+			, ord612.MasterFID
+			, ord612.mfID
+			, ord612.Id
+) AS ord612
+ON	ord612.MasterFid = vis.MasterFid
+	AND ord612.mFid = vis.Fid
+	AND ord612.Id = ord612_items.Id
+/*
+	Информация по 611 ому документу
+*/
+/*
+	Присоединение различного ассортимента по ID
+	По полученному ID будем присоединять группы товаров
+	По заданному типу документов
+	Сейчас тип документа = 611
+*/
+INNER JOIN
+(
+	SELECT	ord611.MasterFID
+			, ord611.mfID
+			, ord611.Id
+	FROM tOrders AS ord611
+	WHERE ord611.orType = 611
+	GROUP BY ord611.MasterFID
+			, ord611.mfID
+			, ord611.Id
+) AS ord611_items
+ON	ord611_items.MasterFID = vis.MasterFid
+	AND ord611_items.mfID = vis.Fid
+/*
+	Присоединение информации по 611 ому документу
+*/
+LEFT JOIN
+(
+	SELECT ord611.MasterFID
+			, ord611.mfID
+			, ord611.orID
+			, ord611.Id
+			/*
+				Старый механизм
+			*/
+			, MAX( CASE WHEN ord611.AttrId  = 603 THEN ord611.AttrText ELSE N'' END ) AS Attr603	/*Снижение цены*/
+			, MAX( CASE WHEN ord611.AttrId  = 604 THEN ord611.AttrText ELSE N'' END ) AS Attr604	/*2+1*/
+			, MAX( CASE WHEN ord611.AttrId  = 605 THEN ord611.AttrText ELSE N'' END ) AS Attr605	/*1+1*/
+			, MAX( CASE WHEN ord611.AttrId  = 606 THEN ord611.AttrText ELSE N'' END ) AS Attr606	/*Примотка*/
+	FROM	tOrders AS ord611
+	INNER JOIN	#tDocuments AS tdoc611
+	/*
+		Ключ по мастерфид + фид + оrId
+	*/
+	ON tdoc611.MasterFid = ord611.MasterFID
+		AND tdoc611.mFid = ord611.mfID
+		AND tdoc611.OrId = ord611.orID
+		/*
+			проверка на то, что мы смотрим последний документа по этой точке
+		*/
+		AND tdoc611.OrDate = (SELECT MAX(docb.OrDate)
+							FROM #tDocuments AS docb
+							WHERE docb.MasterFid = tdoc611.MasterFid
+								AND docb.mFid=tdoc611.mFid
+								AND docb.OrType = 611
+							GROUP BY docb.MasterFid, docb.mFid)
+		AND ord611.Id IN (603, 604, 605, 606)
+		/*
+			Фильтрация по типу документа
+		*/
+		AND tdoc611.OrType = 611
+	GROUP BY ord611.orID
+			, ord611.MasterFID
+			, ord611.mfID
+			, ord611.Id
+) AS ord611
+ON	ord611.MasterFid = vis.MasterFid
+	AND ord611.mFid = vis.Fid
+	AND ord611.Id = ord611_items.Id
+
+--select * from #tDocuments
+/*
 /*
 	ФИНАЛЬНЫЙ ЗАПРОС
 */
@@ -365,6 +780,7 @@ SELECT
 	, faces.dom AS [Дом] /*найдено*/
 	, vis.OtkazStr AS [Магазин закрыт] /*найдено*/
 	/*	607ой документ!*/
+
 	, item607.iName
 	, CASE
 		WHEN facing607.sumSciAndKushFacing=0 THEN N''
@@ -969,3 +1385,4 @@ WHERE rnk < 4
 	Return -1
 
 end
+*/
